@@ -1,0 +1,32 @@
+# .gitignore do Inventariador — escrito, mas AINDA NÃO EM USO.
+#
+# Esta pasta NÃO é um repositório Git (ver D1.4 no ESTADO_ATUAL.md). O arquivo
+# existe pronto para o dia em que o Oz decidir que a frente vira o quinto
+# repositório do projeto — e para que, nesse dia, ninguém precise lembrar do que
+# não pode ser versionado.
+
+# Bytecode — nenhum .pyc é gerado nas rodadas desta frente (python -B).
+__pycache__/
+*.py[cod]
+
+# Saída, logs e relatórios: retrato de uma execução, não código.
+# O inventário da base real passa de 2 MB e muda a cada execução.
+saida/
+logs/
+relatorios/
+
+# Configuração local de máquina. Nunca versionada — o padrão da pasta dos
+# editais mora no código (config.PASTA_EDITAIS_PADRAO), justamente para uma
+# máquina nova não depender de um arquivo que o git ignora.
+.env
+
+# Temporários de editor e de sistema.
+*.swp
+*~
+Thumbs.db
+desktop.ini
+# D86 (2026-09-17): a frente VIROU o quinto repositório do projeto. Este arquivo,
+# escrito antes do `git init`, entrou em uso exatamente como estava: as seis regras
+# que o enunciado da rodada exigia — logs/ saida/ relatorios/ __pycache__/ *.pyc e
+# .env — já estavam todas aqui. Conferidas com `git check-ignore -v` depois do init.
+# O cabeçalho acima fica como foi escrito: era verdade até hoje.
