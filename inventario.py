@@ -41,6 +41,7 @@ ORDEM DETERMINÍSTICA
 
 from __future__ import annotations
 
+import json
 import os
 import zipfile
 from datetime import datetime, timezone
@@ -119,6 +120,43 @@ ACHADO_ENCODING_AMBIGUO = "ENCODING_NOME_AMBIGUO"
 # Extensões que são container e que o Inventariador NÃO abre por não ter regra
 # escrita para elas. Entram no inventário como arquivo, com um achado ao lado.
 EXTENSOES_CONTAINER_NAO_ABERTO = (".rar", ".7z", ".gz", ".tar", ".tgz")
+
+# ─── A ORIGEM DE CADA ARQUIVO: o manifesto do Módulo 1 (05/10/2026, A3) ────
+#
+# A pasta do edital é compartilhada com a equipe, que põe lá habilitação,
+# certidões, catálogos e a proposta. Desde 05/10 o Módulo 1 grava, na pasta de
+# cada edital, o manifesto do que ELE baixou (nome, SHA-256, tamanho e data; e
+# os membros, quando o download é um .zip). Cada arquivo do inventário ganha o
+# campo `origem`, e o Módulo 3 só manda à porta o que não for da equipe.
+#
+#   BAIXADO_PELO_M1      está no manifesto (solto: mesmo nome E mesmo tamanho;
+#                        dentro de container: o container está no manifesto)
+#   ARTEFATO_DO_M1       o manifesto em si e o resumo_edital* que o M1 gera
+#   ARQUIVO_DA_EQUIPE    a pasta TEM manifesto e o arquivo não está nele
+#   SEM_MANIFESTO_DO_M1  a pasta não tem manifesto (edital anterior a 05/10, ou
+#                        manifesto ilegível): comportamento de antes, declarado
+#
+# NADA é deduzido pelo nome do arquivo, e nada é apagado, movido ou renomeado:
+# o Inventariador continua só lendo. O SHA-256 não é recalculado aqui — o
+# contrato do §4.4 continua valendo — e por isso o arquivo solto é casado por
+# NOME e TAMANHO.
+#
+# O `schema_version` continua 3.0.0: o campo é ADITIVO, o `diff_inventario`
+# compara só tamanho e data, e o Módulo 3 exige o MAIOR 3. DECIDI na rodada de
+# 05/10 não subir o número para não declarar «sem base comparável» uma execução
+# que é comparável.
+NOME_MANIFESTO_M1 = "manifesto_m1.json"   # o mesmo nome do agente_captura.py do M1
+ORIGEM_BAIXADO_PELO_M1 = "BAIXADO_PELO_M1"
+ORIGEM_ARTEFATO_DO_M1 = "ARTEFATO_DO_M1"
+ORIGEM_ARQUIVO_DA_EQUIPE = "ARQUIVO_DA_EQUIPE"
+ORIGEM_SEM_MANIFESTO = "SEM_MANIFESTO_DO_M1"
+DESCRICAO_DA_ORIGEM = {
+    ORIGEM_BAIXADO_PELO_M1: "baixado pelo M1 — documento do edital",
+    ORIGEM_ARTEFATO_DO_M1: "gerado pelo M1 (manifesto ou resumo) — não é documento do edital",
+    ORIGEM_ARQUIVO_DA_EQUIPE: "arquivo da equipe — fora do M3",
+    ORIGEM_SEM_MANIFESTO: "sem manifesto do M1 — origem não declarada; segue o comportamento antigo",
+}
+ACHADO_MANIFESTO_ILEGIVEL = "MANIFESTO_DO_M1_ILEGIVEL"
 
 
 # ─── Quais estados são ANOMALIA — a fonte única do §4.2 ─────────────────────
@@ -519,6 +557,62 @@ def _inventariar_container(caminho_zip: Path, nome_zip: str) -> tuple[list[dict]
     return arquivos, achados
 
 
+def _ler_manifesto_m1(pasta_edital: Path) -> tuple[str, set, str]:
+    """
+    (situação, {(nome, tamanho)} do que o M1 baixou, erro). Situação:
+    "PRESENTE", "AUSENTE" ou "ILEGIVEL". Ilegível vale como ausente — a pasta
+    segue o comportamento de antes, e o fato vira achado.
+    """
+    caminho = pasta_edital / NOME_MANIFESTO_M1
+    if not caminho.is_file():
+        return "AUSENTE", set(), ""
+    try:
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        baixados = {(str(a["nome"]), int(a["tamanho_bytes"]))
+                    for a in dados.get("arquivos") or ()}
+        return "PRESENTE", baixados, ""
+    except Exception as erro:
+        return "ILEGIVEL", set(), f"{type(erro).__name__}: {erro}"
+
+
+def _marcar_origem(pasta_edital: Path, arquivos: list[dict]) -> list[dict]:
+    """
+    Põe `origem` e `origem_descricao` em cada arquivo da pasta (ver o bloco
+    «A ORIGEM DE CADA ARQUIVO»). Devolve os achados do manifesto.
+    """
+    situacao, baixados, erro = _ler_manifesto_m1(pasta_edital)
+    achados: list[dict] = []
+    if situacao != "PRESENTE":
+        for entrada in arquivos:
+            entrada["origem"] = ORIGEM_SEM_MANIFESTO
+            entrada["origem_descricao"] = DESCRICAO_DA_ORIGEM[ORIGEM_SEM_MANIFESTO]
+        # O aviso «sem manifesto do M1» vai em CADA arquivo (`origem_descricao`),
+        # e NÃO como achado: a pasta antiga sai com os mesmos achados de antes de
+        # 05/10 — um achado a mais em todo edital antigo seria ruído, e mudaria o
+        # inventário de toda pasta que não mudou.
+        if situacao == "ILEGIVEL":
+            achados.append(_achado(ACHADO_MANIFESTO_ILEGIVEL, f"{NOME_MANIFESTO_M1}: {erro}"))
+        return achados
+
+    containers_do_m1 = {e["caminho"] for e in arquivos
+                        if e["onde_estava"] == ONDE_SOLTO
+                        and (e["caminho"], e["tamanho_bytes"]) in baixados}
+    for entrada in arquivos:
+        if entrada["onde_estava"] == ONDE_SOLTO:
+            if entrada["caminho"] == NOME_MANIFESTO_M1 or entrada["artefato_do_m1"]:
+                origem = ORIGEM_ARTEFATO_DO_M1
+            elif entrada["caminho"] in containers_do_m1:
+                origem = ORIGEM_BAIXADO_PELO_M1
+            else:
+                origem = ORIGEM_ARQUIVO_DA_EQUIPE
+        else:
+            origem = (ORIGEM_BAIXADO_PELO_M1 if entrada["container"] in containers_do_m1
+                      else ORIGEM_ARQUIVO_DA_EQUIPE)
+        entrada["origem"] = origem
+        entrada["origem_descricao"] = DESCRICAO_DA_ORIGEM[origem]
+    return achados
+
+
 def _inventariar_pasta(pasta_edital: Path) -> tuple[list[dict], list[dict]]:
     """
     Tudo o que existe na pasta do edital: os arquivos soltos e o conteúdo dos
@@ -592,6 +686,8 @@ def _inventariar_pasta(pasta_edital: Path) -> tuple[list[dict], list[dict]]:
         de_dentro, achados_do_zip = _inventariar_container(pasta_edital / nome_zip, nome_zip)
         arquivos.extend(de_dentro)
         achados.extend(achados_do_zip)
+
+    achados.extend(_marcar_origem(pasta_edital, arquivos))
 
     arquivos.sort(key=_ordem_do_arquivo)
     achados.sort(key=lambda a: (a["tipo"], a["detalhe"]))
@@ -727,6 +823,7 @@ def montar_inventario(linhas_agenda: list[dict], raiz_editais: Path) -> dict:
                 "entra na identidade do diff."
             ),
             "sem_sha256": "o hash pertence a quem for processar o arquivo (§4.4)",
+            "origem": DESCRICAO_DA_ORIGEM,
             "profundidade": "um nível — o conteúdo do .zip solto na pasta. "
                             "Subpasta e container aninhado são DECLARADOS e não percorridos.",
         },
